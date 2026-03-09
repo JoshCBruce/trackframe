@@ -1,0 +1,167 @@
+# .github/workflows/generate-manifest.yml
+# TRACKFRAME XL — Auto Manifest Generator
+#
+# Triggers on every push to main that modifies race files or firmware.
+# Runs both manifest generation scripts and commits the results back.
+#
+# The [skip ci] tag on the auto-commit prevents this workflow from
+# triggering itself again (infinite loop prevention).
+
+name: Generate Manifests
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "races/**"
+      - "firmware/**"
+
+  # Allow manual trigger from the Actions tab (useful for testing
+  # or forcing a regeneration without changing any files)
+  workflow_dispatch:
+
+jobs:
+  generate-manifests:
+    name: Regenerate manifest.json and firmware-manifest.json
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write  # Required to commit manifests back to the repo
+
+    steps:
+      # ── Checkout ────────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Fetch full history so git log works if needed
+          fetch-depth: 1
+
+      # ── Python setup ────────────────────────────────────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # No external pip dependencies — scripts use stdlib only (json, hashlib,
+      # pathlib, re, sys, datetime). No requirements.txt needed.
+
+      # ── Validate scripts exist ───────────────────────────────────────────────
+      - name: Verify script files exist
+        run: |
+          test -f scripts/generate_manifest.py         || (echo "ERROR: scripts/generate_manifest.py not found" && exit 1)
+          test -f scripts/generate_firmware_manifest.py || (echo "ERROR: scripts/generate_firmware_manifest.py not found" && exit 1)
+
+      # ── Generate race manifest ───────────────────────────────────────────────
+      - name: Generate manifest.json
+        run: |
+          echo "=== Generating race manifest ==="
+          python3 scripts/generate_manifest.py
+
+      # ── Generate firmware manifest ───────────────────────────────────────────
+      # Continues even if firmware directory is empty (non-zero exit allowed)
+      # so a races-only push doesn't fail just because firmware hasn't been
+      # uploaded yet. The script will warn but not hard-fail in that case.
+      - name: Generate firmware-manifest.json
+        run: |
+          echo "=== Generating firmware manifest ==="
+          python3 scripts/generate_firmware_manifest.py || true
+
+      # ── Validate output ─────────────────────────────────────────────────────
+      - name: Validate manifest.json is valid JSON
+        run: |
+          python3 -c "
+          import json, sys
+          with open('manifest.json') as f:
+              data = json.load(f)
+          version = data.get('manifest_version')
+          count   = data.get('race_count', 0)
+          print(f'manifest.json OK — version {version}, {count} race(s)')
+          # Basic sanity checks
+          assert version == 2, f'Unexpected manifest_version: {version}'
+          assert isinstance(data.get('races'), list), 'races must be a list'
+          for race in data['races']:
+              assert 'filename' in race, f'Missing filename in race entry'
+              assert 'sha256'   in race, f'Missing sha256 in {race[\"filename\"]}'
+              assert 'url'      in race, f'Missing url in {race[\"filename\"]}'
+              assert len(race['sha256']) == 64, f'Bad sha256 length in {race[\"filename\"]}'
+          print('All race entries validated.')
+          "
+
+      - name: Validate firmware-manifest.json is valid JSON (if exists)
+        run: |
+          if [ -f firmware-manifest.json ]; then
+            python3 -c "
+          import json
+          with open('firmware-manifest.json') as f:
+              data = json.load(f)
+          for chip in ['teensy', 'esp32']:
+              if chip in data:
+                  entry = data[chip]
+                  assert 'version' in entry, f'Missing version for {chip}'
+                  assert 'sha256'  in entry, f'Missing sha256 for {chip}'
+                  assert len(entry['sha256']) == 64, f'Bad sha256 for {chip}'
+                  print(f'firmware-manifest.json {chip}: v{entry[\"version\"]} OK')
+            "
+          else
+            echo "firmware-manifest.json not present — skipping validation"
+          fi
+
+      # ── Commit back to repo ──────────────────────────────────────────────────
+      - name: Commit updated manifests
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add manifest.json
+
+          # Only stage firmware-manifest.json if it exists
+          if [ -f firmware-manifest.json ]; then
+            git add firmware-manifest.json
+          fi
+
+          # Only commit if there are actual changes (idempotent)
+          if git diff --staged --quiet; then
+            echo "No changes to manifests — nothing to commit."
+          else
+            # Count what changed for the commit message
+            RACE_COUNT=$(python3 -c "import json; d=json.load(open('manifest.json')); print(d['race_count'])")
+            git commit -m "chore: regenerate manifests — ${RACE_COUNT} race(s) [skip ci]"
+            git push
+            echo "Manifests committed and pushed."
+          fi
+
+      # ── Summary ─────────────────────────────────────────────────────────────
+      - name: Print manifest summary
+        if: always()
+        run: |
+          echo "──────────────────────────────────────"
+          echo "manifest.json:"
+          if [ -f manifest.json ]; then
+            python3 -c "
+          import json
+          d = json.load(open('manifest.json'))
+          print(f'  version    : {d[\"manifest_version\"]}')
+          print(f'  updated    : {d[\"updated\"]}')
+          print(f'  race_count : {d[\"race_count\"]}')
+          print(f'  deprecated : {len(d.get(\"deprecated\", []))} file(s)')
+            "
+          else
+            echo "  (not generated)"
+          fi
+          echo ""
+          echo "firmware-manifest.json:"
+          if [ -f firmware-manifest.json ]; then
+            python3 -c "
+          import json
+          d = json.load(open('firmware-manifest.json'))
+          for chip in ['teensy', 'esp32']:
+              if chip in d:
+                  print(f'  {chip:8s}: v{d[chip][\"version\"]}')
+              else:
+                  print(f'  {chip:8s}: (not present)')
+            "
+          else
+            echo "  (not generated)"
+          fi
+          echo "──────────────────────────────────────"
