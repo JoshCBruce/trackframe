@@ -1,7 +1,18 @@
 {
   "manifest_version": 2,
-  "updated": "2026-03-09T10:17:54Z",
-  "race_count": 0,
-  "races": [],
+  "updated": "2026-03-09T18:09:59Z",
+  "race_count": 1,
+  "races": [
+    {
+      "filename": "2025-spa-race.tfr",
+      "circuit": "Circuit de Spa-Francorchamps",
+      "season": 2025,
+      "round": 1,
+      "session": "race",
+      "size_bytes": 30474605,
+      "sha256": "a44dfadbe7a71f85ffae7da804d523aabb58ed433e675766c0929e2d4c5f3987",
+      "url": "https://raw.githubusercontent.com/JoshCBruce/TrackFrame/main/races/2025/2025-spa-race.tfr"
+    }
+  ],
   "deprecated": []
 }
